@@ -5,7 +5,7 @@ Blender add-on (4.2+) with one "Chạy vải" button to bake the robe cloth of t
 ## Cài một lần, tự cập nhật
 Blender > Edit > Preferences > Get Extensions > Repositories > `+` > Add Remote Repository:
 
-`https://raw.githubusercontent.com/<USER>/<REPO>/main/docs/index.json`
+`https://raw.githubusercontent.com/samdao330-eng/Cloth-Tools/main/docs/index.json`
 
 Bật "Check for Updates on Start". Mỗi bản mới sẽ hiện nút Update.
 
