@@ -1,0 +1,23 @@
+{
+  "version": "v1",
+  "blocklist": [],
+  "assetlib_auth_method": "PER_LIBRARY",
+  "data": [
+    {
+      "schema_version": "1.0.0",
+      "id": "cloth_tools",
+      "name": "Cloth Tools",
+      "tagline": "Bake and export robe cloth for the monk and abbot rigs",
+      "version": "1.2.0",
+      "type": "add-on",
+      "maintainer": "OpenMontage",
+      "license": [
+        "SPDX:GPL-3.0-or-later"
+      ],
+      "blender_version_min": "4.2.0",
+      "archive_url": "./cloth_tools-1.2.0.zip",
+      "archive_size": 5111,
+      "archive_hash": "sha256:cc2aacac84d31ed1f4cbad0e7c832fe1a73b1bbb07c05223ad11a18bea9c9d09"
+    }
+  ]
+}
