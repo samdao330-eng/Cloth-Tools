@@ -9,6 +9,7 @@ the add-on only adds the buttons. Its own bookkeeping lives in hidden properties
 """
 import bpy
 
+PROXY_NAME = "Body_Collision_Proxy"
 PREROLL = 20          # frames before the shot: T-pose -> first pose
 STATIC_PRE = 16       # single pose: frames from the T-pose to the held pose
 STATIC_FRAMES = 30    # then frames to settle
@@ -227,6 +228,84 @@ class OM_OT_run(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class OM_OT_proxy(bpy.types.Operator):
+    bl_idname = "om_cloth.proxy"
+    bl_label = "Tạo vật cản thân"
+    bl_description = ("Chọn thân người (đã bind xương) rồi bấm. Tạo bản sao nhẹ bỏ đầu và bàn chân, "
+                      "gắn Collision để vải không xuyên vào người, rồi ẩn đi")
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return ob is not None and ob.type == "MESH" and ob.name != PROXY_NAME
+
+    def execute(self, context):
+        import bmesh
+        sc = context.scene
+        body = context.active_object
+        arm_mod = next((m for m in body.modifiers if m.type == "ARMATURE" and m.object), None)
+        rig = arm_mod.object if arm_mod else find_rig(context)
+        if rig is None:
+            self.report({"ERROR"}, "Không thấy rig. Bind xương cho thân trước")
+            return {"CANCELLED"}
+        if not body.vertex_groups:
+            self.report({"ERROR"}, "Thân chưa có weight xương. Bind bằng Auto-Rig Pro trước")
+            return {"CANCELLED"}
+        if body.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        old = bpy.data.objects.get(PROXY_NAME)
+        if old is not None:
+            bpy.data.objects.remove(old, do_unlink=True)
+        px = body.copy()
+        px.data = body.data.copy()
+        px.name = PROXY_NAME
+        px.data.name = PROXY_NAME
+        px.modifiers.clear()
+        if px.data.shape_keys:
+            px.shape_key_clear()
+        px.data.materials.clear()
+        for c in list(px.users_collection):
+            c.objects.unlink(px)
+        coll = bpy.data.collections.get("OM_helpers") or bpy.data.collections.new("OM_helpers")
+        if coll.name not in sc.collection.children:
+            sc.collection.children.link(coll)
+        coll.objects.link(px)
+        # keep the torso and arms: cut the head and the feet by height (fractions of the body height)
+        bm = bmesh.new()
+        bm.from_mesh(px.data)
+        pts = [px.matrix_world @ v.co for v in bm.verts]
+        zmin, zmax = min(p.z for p in pts), max(p.z for p in pts)
+        xmid = (min(p.x for p in pts) + max(p.x for p in pts)) / 2
+        h = zmax - zmin
+        top, bottom = zmin + sc.om_proxy_top * h, zmin + sc.om_proxy_bottom * h
+        half = 0.06 * h      # the head is narrow: cut only near the middle so shoulders and arms stay
+        kill = [v for v, p in zip(bm.verts, pts) if p.z < bottom or (p.z > top and abs(p.x - xmid) < half)]
+        bmesh.ops.delete(bm, geom=kill, context="VERTS")
+        bm.to_mesh(px.data)
+        bm.free()
+        # lighten
+        faces = sum(len(p.vertices) - 2 for p in px.data.polygons)     # triangles
+        target = max(500, int(sc.om_proxy_faces))
+        if faces > target:
+            dm = px.modifiers.new("Decimate", "DECIMATE")
+            dm.ratio = target / faces
+            with context.temp_override(object=px, active_object=px, selected_objects=[px]):
+                bpy.ops.object.modifier_apply(modifier=dm.name)
+        am = px.modifiers.new("Armature", "ARMATURE")
+        am.object = rig
+        px.modifiers.new("Collision", "COLLISION")
+        px.collision.thickness_outer = 0.008
+        px.collision.thickness_inner = 0.010
+        px.hide_render = True
+        px.hide_set(True)
+        self.report({"INFO"}, f"Đã tạo {PROXY_NAME}: {len(px.data.polygons)} mặt (thân {faces_total(body)} mặt)")
+        return {"FINISHED"}
+
+
+def faces_total(ob):
+    return len(ob.data.polygons)
+
+
 class OM_OT_clear(bpy.types.Operator):
     bl_idname = "om_cloth.clear"
     bl_label = "Xoá bake"
@@ -278,13 +357,23 @@ class OM_PT_cloth(bpy.types.Panel):
         else:
             lay.label(text=f"Đoạn: {sc.frame_start} đến {sc.frame_end} (+{PREROLL} frame đệm)")
         lay.label(text=f"Ước tính: {frames * SECONDS_PER_FRAME[q] / 60:.1f} phút")
+        box2 = lay.box()
+        box2.label(text="Dựng vải cho nhân vật mới")
+        box2.operator("om_cloth.proxy", icon="MESH_MONKEY")
+        box2.prop(sc, "om_proxy_faces")
+        row2 = box2.row(align=True)
+        row2.prop(sc, "om_proxy_bottom")
+        row2.prop(sc, "om_proxy_top")
 
 
-CLASSES = (OM_OT_pose, OM_OT_run, OM_OT_clear, OM_PT_cloth)
+CLASSES = (OM_OT_pose, OM_OT_run, OM_OT_clear, OM_OT_proxy, OM_PT_cloth)
 
 
 def register():
     bpy.types.Scene.om_cloth_final = bpy.props.BoolProperty(name="Chất lượng đẹp", default=True)
+    bpy.types.Scene.om_proxy_faces = bpy.props.IntProperty(name="Số tam giác vật cản", default=5000, min=500, max=20000)
+    bpy.types.Scene.om_proxy_bottom = bpy.props.FloatProperty(name="Cắt chân", description="Bỏ phần dưới mức này (tỉ lệ chiều cao)", default=0.05, min=0.0, max=0.3)
+    bpy.types.Scene.om_proxy_top = bpy.props.FloatProperty(name="Cắt đầu", description="Bỏ phần trên mức này (tỉ lệ chiều cao)", default=0.84, min=0.6, max=1.0)
     for c in CLASSES:
         bpy.utils.register_class(c)
 
@@ -292,5 +381,6 @@ def register():
 def unregister():
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
-    if hasattr(bpy.types.Scene, "om_cloth_final"):
-        del bpy.types.Scene.om_cloth_final
+    for n in ("om_cloth_final", "om_proxy_faces", "om_proxy_bottom", "om_proxy_top"):
+        if hasattr(bpy.types.Scene, n):
+            delattr(bpy.types.Scene, n)
