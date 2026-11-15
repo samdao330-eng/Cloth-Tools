@@ -12,7 +12,8 @@ import bpy
 from bpy.props import EnumProperty
 
 PREROLL = 20
-STATIC_FRAMES = 30   # frames the cloth needs to settle on a held pose
+STATIC_PRE = 12      # static pose: frames to go from the T-pose to the held pose
+STATIC_FRAMES = 18   # then frames to settle
 # (solver quality, collision quality) per preset
 PRESETS = {"FAST": (5, 6), "FINAL": (12, 6)}
 # measured bake cost, seconds per frame, on a normal desktop (the monk is the heavier rig)
@@ -105,7 +106,7 @@ class OM_OT_run(bpy.types.Operator):
         self.quality = "FINAL" if sc.om_cloth_final else "FAST"
         rig = find_rig(context)
         static = rig is not None and (self.pose_only or action_first_frame(rig) is None)
-        frames = PREROLL + STATIC_FRAMES + 1 if static else sc.frame_end - sc.frame_start + 1 + PREROLL
+        frames = STATIC_PRE + STATIC_FRAMES + 1 if static else sc.frame_end - sc.frame_start + 1 + PREROLL
         est = frames * SECONDS_PER_FRAME[self.quality]
         if est >= LONG_SECONDS:
             msg = (f"Sẽ chạy {frames} frame, ước tính khoảng {est / 60:.1f} phút. "
@@ -138,7 +139,7 @@ class OM_OT_run(bpy.types.Operator):
         keep_range = (sc.frame_start, sc.frame_end)
         start, end = sc.frame_start, sc.frame_end
         if static:
-            end = start + PREROLL + STATIC_FRAMES   # T-pose -> held pose (PREROLL frames) -> settle
+            end = start + STATIC_PRE + STATIC_FRAMES   # T-pose -> held pose (PREROLL frames) -> settle
             sc.frame_end = end
         pre = start if static else start - PREROLL
         q, cq = PRESETS[self.quality]
@@ -186,8 +187,8 @@ class OM_OT_run(bpy.types.Operator):
                             pb[k] = v
                         rp = "rotation_quaternion" if pb.rotation_mode == "QUATERNION" else "rotation_euler"
                         for path in ("location", rp, "scale"):
-                            pb.keyframe_insert(path, frame=pre + PREROLL)
-                            added.append((pb, path, pre + PREROLL))
+                            pb.keyframe_insert(path, frame=pre + STATIC_PRE)
+                            added.append((pb, path, pre + STATIC_PRE))
         sc.frame_start = pre
         try:
             bpy.ops.ptcache.bake_all(bake=True)
@@ -232,35 +233,6 @@ class OM_OT_clear(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class OM_OT_abc(bpy.types.Operator):
-    bl_idname = "om_cloth.abc"
-    bl_label = "Xuất Alembic"
-    bl_description = "Xuất áo (và cà sa) đã bake ra thư mục cache cạnh file .blend, để render nhẹ"
-
-    def execute(self, context):
-        sc = context.scene
-        if not bpy.data.filepath:
-            self.report({"ERROR"}, "Lưu file .blend trước")
-            return {"CANCELLED"}
-        names = [n for n in ("upper001", "gasa001") if n in bpy.data.objects]
-        if not names:
-            self.report({"ERROR"}, "Không thấy áo để xuất")
-            return {"CANCELLED"}
-        folder = bpy.path.abspath("//cache")
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, os.path.splitext(os.path.basename(bpy.data.filepath))[0] + "_robe.abc")
-        for o in context.view_layer.objects:
-            o.select_set(False)
-        for n in names:
-            bpy.data.objects[n].select_set(True)
-        context.view_layer.objects.active = bpy.data.objects[names[0]]
-        bpy.ops.wm.alembic_export(filepath=path, start=sc.frame_start, end=sc.frame_end, selected=True,
-                                  evaluation_mode="RENDER", export_hair=False, export_particles=False,
-                                  init_scene_frame_range=False, uvs=True, normals=True, face_sets=False, apply_subdiv=False)
-        self.report({"INFO"}, path)
-        return {"FINISHED"}
-
-
 class OM_PT_cloth(bpy.types.Panel):
     bl_label = "Cloth Tools"
     bl_idname = "OM_PT_cloth"
@@ -286,28 +258,25 @@ class OM_PT_cloth(bpy.types.Panel):
         col.operator("om_cloth.run", text="Chạy vải", icon="PLAY")
         if int(rig.get("Cloth_Preview", 0)):
             lay.label(text="Đang xem dáng: animation tạm tắt. Bấm Chạy vải để quay lại", icon="ERROR")
-        op = lay.operator("om_cloth.run", text="Xem thử dáng hiện tại (kể cả khi có key)", icon="POSE_HLT")
+        op = lay.operator("om_cloth.run", text="Thử dáng", icon="POSE_HLT")
         op.pose_only = True
         lay.prop(sc, "om_cloth_final", text="Chất lượng đẹp (chậm hơn 2 lần)")
         row = lay.row(align=True)
         row.operator("om_cloth.pose", text="Tắt vải (tạo dáng)", icon="POSE_HLT")
         row.operator("om_cloth.clear", text="Xoá bake", icon="TRASH")
         static = action_first_frame(rig) is None
-        frames = PREROLL + STATIC_FRAMES + 1 if static else sc.frame_end - sc.frame_start + 1 + PREROLL
+        frames = STATIC_PRE + STATIC_FRAMES + 1 if static else sc.frame_end - sc.frame_start + 1 + PREROLL
         q = "FINAL" if sc.om_cloth_final else "FAST"
         if static:
-            lay.label(text="Chưa có key: chạy vải giữ nguyên dáng hiện tại")
+            lay.label(text="Chưa có key: vải giữ dáng hiện tại")
         else:
             lay.label(text=f"Đoạn: {sc.frame_start} đến {sc.frame_end} (+{PREROLL} frame đệm)")
         lay.label(text=f"Ước tính: {frames * SECONDS_PER_FRAME[q] / 60:.1f} phút")
         if frames * SECONDS_PER_FRAME[q] >= LONG_SECONDS:
             lay.label(text="Đoạn dài: kiểm tra Frame End trước khi chạy", icon="ERROR")
-        box2 = lay.box()
-        box2.label(text="Nâng cao (không bắt buộc)")
-        box2.operator("om_cloth.abc", icon="EXPORT")
 
 
-CLASSES = (OM_OT_pose, OM_OT_run, OM_OT_clear, OM_OT_abc, OM_PT_cloth)
+CLASSES = (OM_OT_pose, OM_OT_run, OM_OT_clear, OM_PT_cloth)
 
 
 def register():
