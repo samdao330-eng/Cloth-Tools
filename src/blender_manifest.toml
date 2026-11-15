@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "cloth_tools"
-version = "1.4.0"
+version = "1.5.0"
 name = "Cloth Tools"
 tagline = "Bake and export robe cloth for the monk and abbot rigs"
 maintainer = "OpenMontage"

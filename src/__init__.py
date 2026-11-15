@@ -30,6 +30,48 @@ def find_rig(context):
     return None
 
 
+def guess_rig(context):
+    """The body rig of the scene: the armature with the most bones that is not a Faceit armature."""
+    arms = [o for o in context.scene.objects if o.type == "ARMATURE" and not o.name.startswith("Faceit")]
+    return max(arms, key=lambda o: len(o.data.bones)) if arms else None
+
+
+def wire_cloth(rig):
+    """Drive every Cloth modifier (viewport and render) from the rig property Cloth_Sim: 0 = off, 1 = on."""
+    n = 0
+    for o, m in cloth_mods():
+        for prop in ("show_viewport", "show_render"):
+            try:
+                m.driver_remove(prop)
+            except (TypeError, RuntimeError):
+                pass
+            fc = m.driver_add(prop)
+            d = fc.driver
+            d.type = "SCRIPTED"
+            d.expression = "c > 0.5"
+            v = d.variables.new()
+            v.name = "c"
+            v.type = "SINGLE_PROP"
+            t = v.targets[0]
+            t.id_type = "OBJECT"
+            t.id = rig
+            t.data_path = '["Cloth_Sim"]'
+        n += 1
+    return n
+
+
+def ensure_rig(context):
+    """Find the rig with the Cloth_Sim switch, or create the switch on the body rig; connect all Cloth modifiers to it."""
+    rig = find_rig(context)
+    if rig is None:
+        rig = guess_rig(context)
+        if rig is None:
+            return None
+        rig["Cloth_Sim"] = 0
+    wire_cloth(rig)
+    return rig
+
+
 def cloth_mods():
     return [(o, m) for o in bpy.data.objects if o.type == "MESH" for m in o.modifiers if m.type == "CLOTH"]
 
@@ -193,9 +235,9 @@ class OM_OT_pose(bpy.types.Operator):
     bl_description = "Tắt mô phỏng vải: áo đi theo xương ngay, viewport nhanh. Dùng khi tạo dáng và đặt key"
 
     def execute(self, context):
-        rig = find_rig(context)
+        rig = ensure_rig(context)
         if rig is None:
-            self.report({"ERROR"}, "Không tìm thấy rig có thuộc tính Cloth_Sim")
+            self.report({"ERROR"}, "Không tìm thấy rig (armature) trong cảnh")
             return {"CANCELLED"}
         rig["Cloth_Sim"] = 0
         restore_animation(rig)
@@ -211,9 +253,9 @@ class OM_OT_run(bpy.types.Operator):
     pose_only: bpy.props.BoolProperty(name="Chỉ xem dáng hiện tại", default=False, options={"SKIP_SAVE"})
 
     def execute(self, context):
-        rig = find_rig(context)
+        rig = ensure_rig(context)
         if rig is None:
-            self.report({"ERROR"}, "Không tìm thấy rig có thuộc tính Cloth_Sim")
+            self.report({"ERROR"}, "Không tìm thấy rig (armature) trong cảnh")
             return {"CANCELLED"}
         if not cloth_mods():
             self.report({"ERROR"}, "Không có áo nào dùng Cloth trong file này")
@@ -244,7 +286,7 @@ class OM_OT_proxy(bpy.types.Operator):
         sc = context.scene
         body = context.active_object
         arm_mod = next((m for m in body.modifiers if m.type == "ARMATURE" and m.object), None)
-        rig = arm_mod.object if arm_mod else find_rig(context)
+        rig = arm_mod.object if arm_mod else (find_rig(context) or guess_rig(context))
         if rig is None:
             self.report({"ERROR"}, "Không thấy rig. Bind xương cho thân trước")
             return {"CANCELLED"}
@@ -306,6 +348,21 @@ def faces_total(ob):
     return len(ob.data.polygons)
 
 
+class OM_OT_setup(bpy.types.Operator):
+    bl_idname = "om_cloth.setup"
+    bl_label = "Khởi tạo vải"
+    bl_description = ("Tạo công tắc Cloth_Sim trên rig và nối mọi Cloth trong cảnh vào công tắc đó. "
+                      "Bấm lại sau khi thêm Cloth cho áo mới")
+
+    def execute(self, context):
+        rig = ensure_rig(context)
+        if rig is None:
+            self.report({"ERROR"}, "Không tìm thấy rig (armature) trong cảnh")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Đã nối {len(cloth_mods())} Cloth vào công tắc Cloth_Sim của {rig.name}")
+        return {"FINISHED"}
+
+
 class OM_OT_clear(bpy.types.Operator):
     bl_idname = "om_cloth.clear"
     bl_label = "Xoá bake"
@@ -325,13 +382,26 @@ class OM_PT_cloth(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "Cloth Tools"
 
+    @staticmethod
+    def _setup_box(lay, sc):
+        box2 = lay.box()
+        box2.label(text="Dựng vải cho nhân vật mới")
+        box2.operator("om_cloth.proxy", icon="MESH_MONKEY")
+        box2.operator("om_cloth.setup", text="Nối Cloth vào công tắc", icon="PHYSICS")
+        box2.prop(sc, "om_proxy_faces")
+        row2 = box2.row(align=True)
+        row2.prop(sc, "om_proxy_bottom")
+        row2.prop(sc, "om_proxy_top")
+
     def draw(self, context):
         lay = self.layout
         rig = find_rig(context)
-        if rig is None:
-            lay.label(text="Không thấy rig OM (thuộc tính Cloth_Sim)", icon="ERROR")
-            return
         sc = context.scene
+        if rig is None:
+            lay.label(text="Rig chưa có công tắc vải (Cloth_Sim)", icon="INFO")
+            lay.operator("om_cloth.setup", icon="PHYSICS")
+            self._setup_box(lay, sc)
+            return
         mods = cloth_mods()
         done = bool(mods) and all(m.point_cache.is_baked for _, m in mods)
         sim_on = float(rig.get("Cloth_Sim", 0)) > 0.5
@@ -357,16 +427,10 @@ class OM_PT_cloth(bpy.types.Panel):
         else:
             lay.label(text=f"Đoạn: {sc.frame_start} đến {sc.frame_end} (+{PREROLL} frame đệm)")
         lay.label(text=f"Ước tính: {frames * SECONDS_PER_FRAME[q] / 60:.1f} phút")
-        box2 = lay.box()
-        box2.label(text="Dựng vải cho nhân vật mới")
-        box2.operator("om_cloth.proxy", icon="MESH_MONKEY")
-        box2.prop(sc, "om_proxy_faces")
-        row2 = box2.row(align=True)
-        row2.prop(sc, "om_proxy_bottom")
-        row2.prop(sc, "om_proxy_top")
+        self._setup_box(lay, sc)
 
 
-CLASSES = (OM_OT_pose, OM_OT_run, OM_OT_clear, OM_OT_proxy, OM_PT_cloth)
+CLASSES = (OM_OT_pose, OM_OT_run, OM_OT_clear, OM_OT_proxy, OM_OT_setup, OM_PT_cloth)
 
 
 def register():
